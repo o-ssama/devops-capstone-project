@@ -17,7 +17,7 @@ jobs:
         ports:
           - 5432:5432
         env:
-          POSTGRES_PASSWORD: postgres
+          POSTGRES_PASSWORD: pgs3cr3t
           POSTGRES_DB: testdb
         options: >-
           --health-cmd pg_isready
@@ -42,4 +42,4 @@ jobs:
       - name: Run tests with Nose
         run: nosetests
         env:
-          DATABASE_URL: "postgresql://postgres:postgres@postgres:5432/testdb"
+          DATABASE_URL: "postgresql://postgres:pgs3cr3t@postgres:5432/testdb"
