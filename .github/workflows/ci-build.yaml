@@ -42,4 +42,4 @@ jobs:
       - name: Run tests with Nose
         run: nosetests
         env:
-          DATABASE_URL: "postgresql://postgresql:postgres@postgres:5432/testdb"
+          DATABASE_URL: "postgresql://postgres:postgres@postgres:5432/testdb"
