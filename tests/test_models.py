@@ -1,177 +1,194 @@
 """
-Test cases for Account Model
+Account API Service Test Suite
 
+Test cases can be run with the following:
+  nosetests -v --with-spec --spec-color
+  coverage report -m
 """
-import logging
-import unittest
 import os
-from service import app
-from service.models import Account, DataValidationError, db
+import logging
+from unittest import TestCase
 from tests.factories import AccountFactory
+from service.common import status  # HTTP Status Codes
+from service.models import db, Account, init_db
+from service.routes import app
+from service import talisman
 
 DATABASE_URI = os.getenv(
     "DATABASE_URI", "postgresql://postgres:postgres@localhost:5432/postgres"
 )
 
+BASE_URL = "/accounts"
+
+HTTPS_ENVIRON = {'wsgi.url_scheme': 'https'}
 
 ######################################################################
-#  Account   M O D E L   T E S T   C A S E S
+#  T E S T   C A S E S
 ######################################################################
-class TestAccount(unittest.TestCase):
-    """Test Cases for Account Model"""
+
+
+class TestAccountService(TestCase):
+    """Account Service Tests"""
 
     @classmethod
     def setUpClass(cls):
-        """This runs once before the entire test suite"""
+        """Run once before all tests"""
         app.config["TESTING"] = True
         app.config["DEBUG"] = False
         app.config["SQLALCHEMY_DATABASE_URI"] = DATABASE_URI
+        talisman.force_https = False
         app.logger.setLevel(logging.CRITICAL)
-        Account.init_db(app)
+        init_db(app)
 
     @classmethod
     def tearDownClass(cls):
-        """This runs once after the entire test suite"""
+        """Runs once before test suite"""
 
     def setUp(self):
-        """This runs before each test"""
+        """Runs before each test"""
         db.session.query(Account).delete()  # clean up the last tests
         db.session.commit()
 
+        self.client = app.test_client()
+
     def tearDown(self):
-        """This runs after each test"""
+        """Runs once after each test case"""
         db.session.remove()
 
     ######################################################################
-    #  T E S T   C A S E S
+    #  H E L P E R   M E T H O D S
     ######################################################################
 
-    def test_create_an_account(self):
-        """It should Create an Account and assert that it exists"""
-        fake_account = AccountFactory()
-        # pylint: disable=unexpected-keyword-arg
-        account = Account(
-            name=fake_account.name,
-            email=fake_account.email,
-            address=fake_account.address,
-            phone_number=fake_account.phone_number,
-            date_joined=fake_account.date_joined,
+    def _create_accounts(self, count):
+        """Factory method to create accounts in bulk"""
+        accounts = []
+        for _ in range(count):
+            account = AccountFactory()
+            response = self.client.post(BASE_URL, json=account.serialize())
+            self.assertEqual(
+                response.status_code,
+                status.HTTP_201_CREATED,
+                "Could not create test Account",
+            )
+            new_account = response.get_json()
+            account.id = new_account["id"]
+            accounts.append(account)
+        return accounts
+
+    ######################################################################
+    #  A C C O U N T   T E S T   C A S E S
+    ######################################################################
+
+    def test_index(self):
+        """It should get 200_OK from the Home Page"""
+        response = self.client.get("/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_health(self):
+        """It should be healthy"""
+        resp = self.client.get("/health")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+        self.assertEqual(data["status"], "OK")
+
+    def test_create_account(self):
+        """It should Create a new Account"""
+        account = AccountFactory()
+        response = self.client.post(
+            BASE_URL,
+            json=account.serialize(),
+            content_type="application/json"
         )
-        self.assertIsNotNone(account)
-        self.assertEqual(account.id, None)
-        self.assertEqual(account.name, fake_account.name)
-        self.assertEqual(account.email, fake_account.email)
-        self.assertEqual(account.address, fake_account.address)
-        self.assertEqual(account.phone_number, fake_account.phone_number)
-        self.assertEqual(account.date_joined, fake_account.date_joined)
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
 
-    def test_add_a_account(self):
-        """It should Create an account and add it to the database"""
-        accounts = Account.all()
-        self.assertEqual(accounts, [])
+        # Make sure location header is set
+        location = response.headers.get("Location", None)
+        self.assertIsNotNone(location)
+
+        # Check the data is correct
+        new_account = response.get_json()
+        self.assertEqual(new_account["name"], account.name)
+        self.assertEqual(new_account["email"], account.email)
+        self.assertEqual(new_account["address"], account.address)
+        self.assertEqual(new_account["phone_number"], account.phone_number)
+        self.assertEqual(new_account["date_joined"], str(account.date_joined))
+
+    def test_bad_request(self):
+        """It should not Create an Account when sending the wrong data"""
+        response = self.client.post(BASE_URL, json={"name": "not enough data"})
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_unsupported_media_type(self):
+        """It should not Create an Account when sending the wrong media type"""
         account = AccountFactory()
-        account.create()
-        # Assert that it was assigned an id and shows up in the database
-        self.assertIsNotNone(account.id)
-        accounts = Account.all()
-        self.assertEqual(len(accounts), 1)
+        response = self.client.post(
+            BASE_URL,
+            json=account.serialize(),
+            content_type="test/html"
+        )
+        self.assertEqual(response.status_code, status.HTTP_415_UNSUPPORTED_MEDIA_TYPE)
 
-    def test_read_account(self):
-        """It should Read an account"""
-        account = AccountFactory()
-        account.create()
+    # ADD YOUR TEST CASES HERE ...
 
-        # Read it back
-        found_account = Account.find(account.id)
-        self.assertEqual(found_account.id, account.id)
-        self.assertEqual(found_account.name, account.name)
-        self.assertEqual(found_account.email, account.email)
-        self.assertEqual(found_account.address, account.address)
-        self.assertEqual(found_account.phone_number, account.phone_number)
-        self.assertEqual(found_account.date_joined, account.date_joined)
+    def test_read_an_account(self):
+        """It should Read a single Account"""
+        account = self._create_accounts(1)[0]
+        resp = self.client.get(
+            f"{BASE_URL}/{account.id}", content_type="application/json"
+        )
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        data = resp.get_json()
+        self.assertEqual(data["name"], account.name)
+
+    def test_account_not_found(self):
+        """It should not find an Account"""
+        resp = self.client.get(f"{BASE_URL}/0")
+        self.assertEqual(resp.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_get_account_list(self):
+        """It should Get a list of Accounts"""
+        self._create_accounts(5)
+        resp = self.client.get(BASE_URL)
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        data = resp.get_json()
+        self.assertEqual(len(data), 5)
 
     def test_update_account(self):
-        """It should Update an account"""
-        account = AccountFactory(email="advent@change.me")
-        account.create()
-        # Assert that it was assigned an id and shows up in the database
-        self.assertIsNotNone(account.id)
-        self.assertEqual(account.email, "advent@change.me")
+        """It should Update an existing Account"""
+        # create an Account to update
+        test_account = AccountFactory()
+        resp = self.client.post(BASE_URL, json=test_account.serialize())
+        self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
+        # update the account
+        new_account = resp.get_json()
+        new_account["name"] = "Something Known"
+        resp = self.client.put(f"{BASE_URL}/{new_account['id']}", json=new_account)
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        updated_account = resp.get_json()
+        self.assertEqual(updated_account["name"], "Something Known")
 
-        # Fetch it back
-        account = Account.find(account.id)
-        account.email = "XYZZY@plugh.com"
-        account.update()
+    def test_delete_account(self):
+        """It should Delete an Account"""
+        account = self._create_accounts(1)[0]
+        resp = self.client.delete(f"{BASE_URL}/{account.id}")
+        self.assertEqual(resp.status_code, status.HTTP_204_NO_CONTENT)
 
-        # Fetch it back again
-        account = Account.find(account.id)
-        self.assertEqual(account.email, "XYZZY@plugh.com")
+    def test_security_headers(self):
+        """It should return security headers"""
+        response = self.client.get('/', environ_overrides=HTTPS_ENVIRON)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        headers = {
+            'X-Frame-Options': 'SAMEORIGIN',
+            'X-Content-Type-Options': 'nosniff',
+            'Content-Security-Policy': "default-src 'self'; object-src 'none'",
+            'Referrer-Policy': 'strict-origin-when-cross-origin'
+        }
+        for key, value in headers.items():
+            self.assertEqual(response.headers.get(key), value)
 
-    def test_delete_an_account(self):
-        """It should Delete an account from the database"""
-        accounts = Account.all()
-        self.assertEqual(accounts, [])
-        account = AccountFactory()
-        account.create()
-        # Assert that it was assigned an id and shows up in the database
-        self.assertIsNotNone(account.id)
-        accounts = Account.all()
-        self.assertEqual(len(accounts), 1)
-        account = accounts[0]
-        account.delete()
-        accounts = Account.all()
-        self.assertEqual(len(accounts), 0)
-
-    def test_list_all_accounts(self):
-        """It should List all Accounts in the database"""
-        accounts = Account.all()
-        self.assertEqual(accounts, [])
-        for account in AccountFactory.create_batch(5):
-            account.create()
-        # Assert that there are not 5 accounts in the database
-        accounts = Account.all()
-        self.assertEqual(len(accounts), 5)
-
-    def test_find_by_name(self):
-        """It should Find an Account by name"""
-        account = AccountFactory()
-        account.create()
-
-        # Fetch it back by name
-        same_account = Account.find_by_name(account.name)[0]
-        self.assertEqual(same_account.id, account.id)
-        self.assertEqual(same_account.name, account.name)
-
-    def test_serialize_an_account(self):
-        """It should Serialize an account"""
-        account = AccountFactory()
-        serial_account = account.serialize()
-        self.assertEqual(serial_account["id"], account.id)
-        self.assertEqual(serial_account["name"], account.name)
-        self.assertEqual(serial_account["email"], account.email)
-        self.assertEqual(serial_account["address"], account.address)
-        self.assertEqual(serial_account["phone_number"], account.phone_number)
-        self.assertEqual(serial_account["date_joined"], str(account.date_joined))
-
-    def test_deserialize_an_account(self):
-        """It should Deserialize an account"""
-        account = AccountFactory()
-        account.create()
-        serial_account = account.serialize()
-        new_account = Account()
-        new_account.deserialize(serial_account)
-        self.assertEqual(new_account.name, account.name)
-        self.assertEqual(new_account.email, account.email)
-        self.assertEqual(new_account.address, account.address)
-        self.assertEqual(new_account.phone_number, account.phone_number)
-        self.assertEqual(new_account.date_joined, account.date_joined)
-
-    def test_deserialize_with_key_error(self):
-        """It should not Deserialize an account with a KeyError"""
-        account = Account()
-        self.assertRaises(DataValidationError, account.deserialize, {})
-
-    def test_deserialize_with_type_error(self):
-        """It should not Deserialize an account with a TypeError"""
-        account = Account()
-        self.assertRaises(DataValidationError, account.deserialize, [])
+    def test_cors_security(self):
+        """It should return a CORS header"""
+        response = self.client.get('/', environ_overrides=HTTPS_ENVIRON)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        # Check for the CORS header
+        self.assertEqual(response.headers.get('Access-Control-Allow-Origin'), '*')
